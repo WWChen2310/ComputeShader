@@ -1,0 +1,92 @@
+#include "Packages/jp.keijiro.noiseshader/Shader/SimplexNoise2D.hlsl"
+#include "Packages/jp.keijiro.noiseshader/Shader/ClassicNoise3D.hlsl"
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#define PI 3.1415926535897932384626433832795
+#define Wind_Max 10
+
+// total size: 5*4 = 20bytes
+struct WindStruct
+{
+    uint WID;
+    float WindProgress;
+    float WindWidth;
+    float NoiseWidth;
+    float DeltaTime;
+};
+
+RWStructuredBuffer<WindStruct> windBuffer;
+
+//float RippleDensity;
+float Time;
+float2 Resolution;
+uint WindFlod;
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> Result;
+
+float Remap(float val, float in1, float in2, float out1, float out2)
+{
+    return out1 + (val - in1) * (out2 - out1) / (in2 - in1);
+}
+
+float InRange(float val, float min, float max)
+{
+    return (val < max && val > min) ? 1 : 0;
+}
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    Result[id.xy] = float4(0, 0, 0, 1);
+
+    for (uint i = 0; i < Wind_Max; i++)
+    {
+        WindStruct w = windBuffer[i];
+        
+        if (w.WID != -1)
+        {
+            if (WindFlod == 0)
+            {
+                float u = id.x / Resolution.x;
+                float v = id.y / Resolution.y;
+
+                float min = Remap(w.WindProgress, 0, 1, -w.WindWidth, Resolution.x);
+                float max = Remap(w.WindProgress, 0, 1, 0, Resolution.x + w.WindWidth);
+                
+                if (InRange(id.x, min, max))
+                {
+                    Result[id.xy] += 1;
+                }
+            }
+            else
+            {
+                float u = id.x / (Resolution.x / 2);
+                float v = id.y / Resolution.y;
+                float3 scaled_uv = float3(1.3 * u, 1.3 * v, 0.5 * Time);
+
+                float minL = Remap(w.WindProgress, 0, 1, -w.WindWidth, Resolution.x / 2) - w.NoiseWidth * ClassicNoise(scaled_uv);
+                float maxL = Remap(w.WindProgress, 0, 1, 0, Resolution.x / 2 + w.WindWidth) + w.NoiseWidth * ClassicNoise(scaled_uv);
+                float minR = Remap(1 - w.WindProgress, 0, 1, -w.WindWidth + Resolution.x / 2, Resolution.x) - w.NoiseWidth * ClassicNoise(scaled_uv);
+                float maxR = Remap(1 - w.WindProgress, 0, 1, Resolution.x / 2, Resolution.x + w.WindWidth) + w.NoiseWidth * ClassicNoise(scaled_uv);
+                
+                if (id.x <= Resolution.x / 2 && InRange(id.x, minL, maxL))
+                {
+                    float d = min(abs(id.x - minL), abs(id.x - maxL));
+                    float factor = pow(Remap(d, 0, w.WindWidth / 2, 0, 1), 1);
+                    Result[id.xy] += factor;
+                    //Result[id.xy] += SimplexNoise(0.1 * id);
+                }
+                if (id.x > Resolution.x / 2 && InRange(id.x, minR, maxR))
+                {
+                    float d = min(abs(id.x - minR), abs(id.x - maxR));
+                    float factor = pow(Remap(d, 0, w.WindWidth / 2, 0, 1), 1);
+                    Result[id.xy] += factor;
+                }
+            }
+        }
+        w.WindProgress += w.DeltaTime;
+        windBuffer[i] = w;
+    }
+}

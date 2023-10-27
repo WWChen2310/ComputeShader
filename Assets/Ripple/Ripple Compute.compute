@@ -1,0 +1,84 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#define PI 3.1415926535897932384626433832795
+#define Ripple_Max 100
+
+// total size: 6*4 = 24btye
+struct RippleStruct
+{
+    uint RID;
+    float2 RipplePos;
+    float RippleProgress;
+    float Radius;
+    float Cover;
+    float DeltaTime;
+    uint t;
+};
+
+RWStructuredBuffer<RippleStruct> rippleBuffer;
+
+float RippleDensity;
+float2 Resolution;
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> Result;
+
+float Remap(float val, float in1, float in2, float out1, float out2)
+{
+    return out1 + (val - in1) * (out2 - out1) / (in2 - in1);
+}
+
+float InRange(float val, float min, float max)
+{
+    return (val < max && val > min)? 1: 0;
+}
+
+float DistanceCrossBorder(float2 pos, float2 center, bool horizontalCross, bool verticalCross)
+{
+    float ho = min(min(distance(pos + float2(-Resolution.x, 0), center), distance(pos + float2(Resolution.x, 0), center)), distance(pos, center));
+    float vo = min(min(distance(pos + float2(0, -Resolution.y), center), distance(pos + float2(0, Resolution.y), center)), distance(pos, center));
+
+    return !horizontalCross && !verticalCross ? distance(pos, center):
+    horizontalCross && !verticalCross ? ho :
+    !horizontalCross && verticalCross ? vo :
+    min(ho, vo);
+}
+
+float easeOutCubic(float x)
+{
+    return sqrt(1 - pow(x - 1, 2));
+}
+
+float easeOutQuint(float x)
+{
+    return 1 - pow(1 - x, 5);
+}
+
+[numthreads(8, 8, 1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    Result[id.xy] = float4(0, 0, 0, 1);
+
+    for (uint i = 0; i < Ripple_Max; i++)
+    {
+        RippleStruct r = rippleBuffer[i];
+        
+        float p = easeOutQuint(r.RippleProgress);
+
+        if (r.RID != -1)
+        {
+            float min = clamp(Remap(p, 0, 1, 0, r.Radius + r.Cover / 2) - r.Cover, 0, r.Radius - r.Cover / 2);
+            float max = Remap(p, 0, 1, 0, r.Radius + r.Cover / 2);
+
+            if (InRange(DistanceCrossBorder(id.xy, r.RipplePos, 1, 0), min, max) == 1)
+            {
+                float val = Remap(DistanceCrossBorder(id.xy, r.RipplePos, 1, 0), min, max, 0, 1) * RippleDensity * 2 * PI;
+                Result[id.xy] += clamp(sin(val), 0, 1) * (1 - p);
+            }
+        }
+        r.RippleProgress += r.DeltaTime;
+        r.t += 1;
+        rippleBuffer[i] = r;
+    }
+}
